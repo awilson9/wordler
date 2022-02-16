@@ -1,5 +1,5 @@
 import { Client, Intents, MessageEmbed, MessageActionRow, MessageButton } from 'discord.js';
-import { token } from './config.json';
+import { token } from './config.js';
 
 // Create a new client instance
 const client = new Client({ intents: [Intents.FLAGS.GUILDS] });
