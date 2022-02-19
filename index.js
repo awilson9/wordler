@@ -1,8 +1,11 @@
 import { Client, Intents, MessageEmbed, MessageActionRow, MessageButton } from 'discord.js';
-import { token } from './config.js';
+import { token, guildId } from './config.js';
 
 // Create a new client instance
-const client = new Client({ intents: [Intents.FLAGS.GUILDS] });
+const client = new Client({
+  intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES],
+  partials: ['MESSAGE', 'USER', 'CHANNEL'],
+});
 
 const runMeta = {
   wordleMessagesByAuthor: {},
@@ -15,13 +18,62 @@ const findWordleChannel = () => {
   console.log('found wordle channel', runMeta.wordleChannel.name);
 };
 
+const getWordleDaddyRole = () => {
+  const wordleDaddy = client.guilds.cache
+    .get(guildId)
+    .roles.cache.find((role) => role.name === 'wordledaddy');
+  console.log(wordleDaddy);
+  runMeta.wordleDaddyRole = wordleDaddy;
+};
 // When the client is ready, run this code (only once)
 client.once('ready', async () => {
   console.log('Ready!');
   findWordleChannel();
+  getWordleDaddyRole();
   await getAllWordleMessagesByAuthor(runMeta.oldChannel);
   await getAllWordleMessagesByAuthor(runMeta.wordleChannel);
 });
+
+client.on('messageCreate', async (message) => {
+  console.log(`Message from ${message.author.username}: ${message.content}: processing`);
+  const processResult = processMessage(message);
+  if (processResult) {
+    console.log('wordle result processed and recorded');
+  } else {
+    console.log('message amst not contain no wordlerdlers');
+  }
+});
+
+const processMessage = (message) => {
+  const { author, content } = message;
+  const byAuthor = runMeta.wordleMessagesByAuthor;
+  if (byAuthor[author.id] === undefined) {
+    byAuthor[author.id] = { messages: [], author };
+  }
+  const parsedMessage = content.split('\n');
+  const scorePiece = parsedMessage.find((message) => message.startsWith('Wordle'));
+
+  if (!scorePiece) return;
+  const wordleId = scorePiece.split(' ')[1];
+  console.log('wordleid', wordleId);
+  const boardPieces = parsedMessage.filter(
+    (message) =>
+      message.includes('⬛') ||
+      message.includes('⬜') ||
+      message.includes('🟨') ||
+      message.includes('🟩'),
+  );
+  if (scorePiece !== undefined && boardPieces !== undefined && boardPieces.length > 0 && wordleId) {
+    byAuthor[author.id].messages[wordleId] = {
+      author: author,
+      scorePiece,
+      boardPieces,
+      created: message.createdAt.getTime(),
+      hardMode: scorePiece.includes('*'),
+    };
+    return true;
+  }
+};
 
 const getAllWordleMessagesByAuthor = async (channel) => {
   let wordleMessages = [];
@@ -43,36 +95,7 @@ const getAllWordleMessagesByAuthor = async (channel) => {
   const byAuthor = runMeta.wordleMessagesByAuthor || {};
 
   [...wordleMessages.values()].forEach(([_, message]) => {
-    const { author, content } = message;
-    if (byAuthor[author.id] === undefined) {
-      byAuthor[author.id] = { messages: [], author };
-    }
-
-    const parsedMessage = content.split('\n');
-    const scorePiece = parsedMessage.find((message) => message.startsWith('Wordle'));
-    if (!scorePiece) return;
-    const wordleId = scorePiece.split(' ')[1];
-    const boardPieces = parsedMessage.filter(
-      (message) =>
-        message.includes('⬛') ||
-        message.includes('⬜') ||
-        message.includes('🟨') ||
-        message.includes('🟩'),
-    );
-    if (
-      scorePiece !== undefined &&
-      boardPieces !== undefined &&
-      boardPieces.length > 0 &&
-      wordleId &&
-      !byAuthor[author.id].messages[wordleId]
-    ) {
-      byAuthor[author.id].messages[wordleId] = {
-        author: author,
-        scorePiece,
-        boardPieces,
-        created: message.createdAt.getTime(),
-      };
-    }
+    processMessage(message);
   });
   runMeta.wordleMessagesByAuthor = byAuthor;
 };
@@ -83,28 +106,47 @@ const COMMANDS = {
 };
 
 const BUTTONS = {
-  AllTime: 'allTime',
+  AllTime: 'all time',
+  FuckTheNonePlayers: 'fuck the none players (every day you dont play counts as 7)',
   Weekly: 'weekly',
+  HardMode: 'hard mode only (weekly)',
 };
 
 const computeWordleStats = (buttonId) => {
-  const computed = Object.values(runMeta.wordleMessagesByAuthor)
+  let computed = Object.values(runMeta.wordleMessagesByAuthor)
     .filter((wordleInfo) => wordleInfo.messages.length > 0)
     .map((wordleInfo) => {
       let messages = Object.values(wordleInfo.messages);
-      if (buttonId === BUTTONS.Weekly) {
+      if (
+        buttonId === BUTTONS.Weekly ||
+        buttonId === BUTTONS.FuckTheNonePlayers ||
+        buttonId === BUTTONS.HardMode
+      ) {
         messages = messages.filter(
-          (message) => message.created > new Date().getTime() - 7 * 24 * 60 * 60 * 1000, // 1 week in ms
+          (message) =>
+            message.created > new Date().getTime() - 7 * 24 * 60 * 60 * 1000 &&
+            (buttonId === BUTTONS.HardMode ? message.hardMode === true : true), // 1 week in ms
         );
       }
       wordleInfo.total = messages.length;
+      wordleInfo.scores = [];
 
       const totalNumGuesses = messages.reduce((acc, message) => {
         const guessInfo = message.scorePiece.split(' ').find((piece) => piece.includes('/6'));
         if (!guessInfo) console.log(message);
-
-        const guessesForWordleInstance = Number(guessInfo.split('/')[0]);
+        let guessesForWordleInstance;
+        const guesses = guessInfo.split('/')[0];
+        if (!guesses) {
+          return;
+        }
+        const stringGuess = guesses.toString().toLowerCase();
+        if (stringGuess === 'x') {
+          guessesForWordleInstance = 7;
+        } else {
+          guessesForWordleInstance = Number(guesses);
+        }
         if (guessesForWordleInstance > 0) {
+          wordleInfo.scores.push({ score: guessesForWordleInstance, date: message.created });
           return guessesForWordleInstance + acc;
         } else {
           wordleInfo.total--;
@@ -116,23 +158,48 @@ const computeWordleStats = (buttonId) => {
       console.log(wordleInfo.author.username, wordleInfo.total, wordleInfo.average);
       return wordleInfo;
     });
+
+  if (buttonId === BUTTONS.FuckTheNonePlayers) {
+    computed = computed.map((wordleInfo) => {
+      if (wordleInfo.total < 7) {
+        const applyFuckYou = 7 - wordleInfo.total;
+        wordleInfo.average = (
+          (Number(wordleInfo.average) * Number(wordleInfo.total) + 7 * applyFuckYou) /
+          7
+        ).toFixed();
+        wordleInfo.total = 7;
+      }
+      return wordleInfo;
+    });
+  }
   console.log('\n');
   return computed.sort((a, b) => (a.average < b.average ? -1 : 1));
 };
 
 const fetchLeaderboard = async (interaction, buttonId) => {
   const computed = computeWordleStats(buttonId);
+
+  const embedTable = [];
+  computed.forEach((scoreForUser) => {
+    if (!isNaN(scoreForUser.average)) {
+      const best = scoreForUser.scores.reduce((a, b) =>
+        Math.min(a.score, b.score) === a.score ? a : b,
+      );
+      const worst = scoreForUser.scores.reduce((a, b) =>
+        Math.max(a.score, b.score) === a.score ? a : b,
+      );
+      embedTable.push({
+        name: scoreForUser.author.username,
+        value: `score: ${scoreForUser.average.toString()}\ngames played: ${scoreForUser.total.toString()}\nbest: ${best.score.toString()}\nworst: ${worst.score.toString()}`,
+      });
+    }
+  });
   interaction.reply({
     embeds: [
       new MessageEmbed()
         .setColor('#0099ff')
         .setTitle(`Current Leaderboard: ${buttonId}`)
-        .addFields(
-          computed.map((scoreForUser) => ({
-            name: scoreForUser.author.username,
-            value: scoreForUser.average,
-          })),
-        ),
+        .addFields(embedTable),
     ],
   });
 };
@@ -146,15 +213,27 @@ client.on('interactionCreate', async (interaction) => {
         break;
       case COMMANDS.Leaderboard: {
         const allTime = new MessageActionRow().addComponents(
-          new MessageButton().setCustomId(BUTTONS.AllTime).setLabel('All Time').setStyle('PRIMARY'),
+          new MessageButton().setCustomId(BUTTONS.AllTime).setLabel('all Time').setStyle('PRIMARY'),
+        );
+        const fuckYou = new MessageActionRow().addComponents(
+          new MessageButton()
+            .setCustomId(BUTTONS.FuckTheNonePlayers)
+            .setLabel('fuck the none players chaos mode')
+            .setStyle('PRIMARY'),
+        );
+        const hardMode = new MessageActionRow().addComponents(
+          new MessageButton()
+            .setCustomId(BUTTONS.HardMode)
+            .setLabel('Hard Mode Only scores')
+            .setStyle('PRIMARY'),
         );
         const weekly = new MessageActionRow().addComponents(
-          new MessageButton().setCustomId(BUTTONS.Weekly).setLabel('Weekly').setStyle('PRIMARY'),
+          new MessageButton().setCustomId(BUTTONS.Weekly).setLabel('weekly').setStyle('PRIMARY'),
         );
         await interaction.reply({
-          content: 'All time or weekly?',
+          content: 'All time or chaos or weekly?',
           ephemeral: true,
-          components: [allTime, weekly],
+          components: [allTime, fuckYou, weekly, hardMode],
         });
         break;
       }
